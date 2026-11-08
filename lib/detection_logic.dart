@@ -170,6 +170,12 @@ class PipelineConfig {
     // Per-hazard confidence floors, applied on top of minConf (the higher wins).
     this.minConfByTag = const {},
     this.minConfByLabel = const {},
+    // When set, the repeat interval is chosen from these ESTIMATED distances
+    // instead of from the proximity band, so widening the bands (see
+    // kFieldPipelineConfig) makes alerts stronger and earlier without making
+    // the same object repeat more often.
+    this.repeatVeryNearFeet,
+    this.repeatNearFeet,
   });
 
   final double minConf;
@@ -189,12 +195,25 @@ class PipelineConfig {
   final int lowSevConfirmNeeded;
   final Map<String, double> minConfByTag;
   final Map<String, double> minConfByLabel;
+  final double? repeatVeryNearFeet;
+  final double? repeatNearFeet;
 
   Duration debounceFor(Proximity p) => switch (p) {
         Proximity.veryNear => debounceVeryNear,
         Proximity.near => debounceNear,
         Proximity.far => debounceFar,
       };
+
+  /// Repeat interval for a candidate: from the repeat distances when they are
+  /// set, otherwise from the candidate's own proximity band.
+  Duration debounceForCandidate(Candidate c) {
+    final vn = repeatVeryNearFeet;
+    final n = repeatNearFeet;
+    if (vn == null || n == null) return debounceFor(c.proximity);
+    if (c.clipped || c.distFeet <= vn) return debounceVeryNear;
+    if (c.distFeet <= n) return debounceNear;
+    return debounceFar;
+  }
 
   double minConfFor(String tag, String label) {
     var m = minConf;
@@ -210,7 +229,23 @@ class PipelineConfig {
 /// phone testing is here, in one place. [PipelineConfig]'s own defaults are the
 /// original (pre-phone-test) values, kept so the older unit tests still pin the
 /// original behaviour.
+///
+/// DISTANCE BANDS ARE A STOPGAP, NOT A CALIBRATION. The distance model
+/// (lib/main.dart `_distanceModel`) was fitted from two points with an
+/// unmeasured camera height, and phone testing showed it over-estimating: a
+/// chair about 4-5 ft away read 6.5-7.4 ft (roughly 1.5x too far, the unsafe
+/// direction). Instead of changing the model, the three distance thresholds
+/// below are simply 1.5x the originals (7 -> 10.5, 8.5 -> 12.75, 10 -> 15 ft of
+/// ESTIMATED distance), so "very near" and "near" fire earlier. Nothing here
+/// makes the estimates more accurate. When the model is properly calibrated,
+/// set them back to veryNearFeet 7, nearFeet 8.5, maxDistFeet 10.
 const PipelineConfig kFieldPipelineConfig = PipelineConfig(
+  maxDistFeet: 15.0,
+  veryNearFeet: 10.5,
+  nearFeet: 12.75,
+  // Repeat intervals still use the ORIGINAL 7 / 8.5 ft thresholds.
+  repeatVeryNearFeet: 7.0,
+  repeatNearFeet: 8.5,
   // Chairs, desks, stairs up, people: 3 of the last 5 frames. Stairs down and
   // vehicles keep 2 of 3 and the 0.85 fast path (fastPathConf above).
   lowSevConfirmWindow: 5,
@@ -352,7 +387,7 @@ class DetectionPipeline {
     for (final c in confirmed) {
       if (c.tier == AlertTier.info) continue; // shown, never dispatched
       final last = _lastFired[c.tag];
-      final due = last == null || now.difference(last) >= config.debounceFor(c.proximity);
+      final due = last == null || now.difference(last) >= config.debounceForCandidate(c);
       if (due || c.tier == AlertTier.critical) {
         alert = c;
         break;

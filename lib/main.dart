@@ -198,7 +198,9 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
   bool _isDetecting = false;
   bool _isMounted = true;
   // What each alert feels/sounds like, and which speech is suppressed.
-  final AlertPolicy _policy = AlertPolicy();
+  // speakBands: say "close ahead", never a number of feet - the distance
+  // estimate is not trustworthy enough to read out.
+  final AlertPolicy _policy = AlertPolicy(speakBands: true, criticalSpeechGap: const Duration(seconds: 3));
   // Evaluation record (copyable from the debug panel) for measuring cognitive
   // load, suppression, latency and fail-safe events after a session.
   final AlertLog _log = AlertLog();
@@ -246,7 +248,8 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
   String _dbgLabel = "-";
   String _dbgTier = "-";
   String _dbgModel = "-";
-  double? _dbgDistFt; // median-smoothed
+  double? _dbgDistFt; // median-smoothed, UNRELIABLE: shown in the debug panel only
+  Proximity? _dbgProximity; // the band that is shown on screen instead of a number
   bool _dbgClipped = false; // base out of frame: distance is "no farther than"
   double? _dbgConfidence;
   double? _dbgYMax; // raw box-bottom position — needed to recalibrate
@@ -276,6 +279,7 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
   int _bannerDist = 0;
   bool _bannerClipped = false;
   AlertTier? _bannerTier;
+  Proximity _bannerProximity = Proximity.far;
   Timer? _bannerHideTimer;
 
   void _showHazardBanner({
@@ -284,6 +288,7 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
     required int dist,
     required bool clipped,
     required AlertTier tier,
+    required Proximity proximity,
   }) {
     _bannerHideTimer?.cancel();
     if (mounted) {
@@ -294,6 +299,7 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
         _bannerDist = dist;
         _bannerClipped = clipped;
         _bannerTier = tier;
+        _bannerProximity = proximity;
       });
     }
     _bannerHideTimer = Timer(const Duration(seconds: 2), () {
@@ -645,6 +651,7 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
       _dbgLabel = d.label;
       _dbgTier = d.tier.name;
       _dbgDistFt = r.displayDistFeet;
+      _dbgProximity = d.proximity;
       _dbgClipped = d.clipped;
       _dbgConfidence = d.conf;
       _dbgYMax = d.yMax;
@@ -655,6 +662,7 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
       _dbgLabel = "-";
       _dbgTier = "-";
       _dbgDistFt = null;
+      _dbgProximity = null;
       _dbgClipped = false;
       _dbgConfidence = null;
       _dbgYMax = null;
@@ -708,6 +716,7 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
         dist: hazard.distFeet.round(),
         clipped: hazard.clipped,
         tier: tier,
+        proximity: hazard.proximity,
       );
     }
 
@@ -821,16 +830,25 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
     );
   }
 
-  // Always visible. Second line shows what the number is based on (class,
-  // confidence, and raw box-bottom y) so a taped-distance walk yields the
-  // (real distance, yMax) pairs needed to recalibrate.
+  static String _bandName(Proximity? p) => switch (p) {
+        Proximity.veryNear => 'VERY NEAR',
+        Proximity.near => 'NEAR',
+        Proximity.far => 'FAR',
+        null => '-',
+      };
+
+  // Always visible. Shows a BAND (very near / near / far), not a number: the
+  // estimate was seen over-reading by ~1.5x, so a precise figure would be
+  // false precision. The one exception is a box touching the bottom of the
+  // frame, where the honest statement is "no farther than X ft". The raw
+  // estimate and y stay in the debug panel for recalibration.
   Widget _distanceBadge() {
     final d = _dbgDistFt;
     final distText = d == null
         ? '-'
         : _dbgClipped
             ? '≤ ${d.toStringAsFixed(1)} ft (closer than camera can see)'
-            : '${d.toStringAsFixed(1)} ft';
+            : _bandName(_dbgProximity);
     final detail = d == null
         ? 'no detection'
         : '${_dbgLabel.toUpperCase()}  ${_dbgConfidence != null ? (_dbgConfidence! * 100).round() : 0}%'
@@ -942,7 +960,7 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
                       ? _bannerZone.toUpperCase() // path blocked: no distance
                       : _bannerClipped
                           ? "${_bannerZone.toUpperCase()} - UNDER $_bannerDist FT"
-                          : "${_bannerZone.toUpperCase()} - $_bannerDist FT",
+                          : "${_bannerZone.toUpperCase()} - ${_bandName(_bannerProximity)}",
                   style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 2),
@@ -1073,6 +1091,8 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
               "Vibration strength control: ${_hasAmplitude ? 'yes' : 'NO (rhythm only)'}\n"
               "Model: $_dbgModel\n"
               "Tag/Tier: $_dbgTag ($_dbgTier)\n"
+              "Est. distance: ${_dbgDistFt != null ? '${_dbgDistFt!.toStringAsFixed(1)} ft (unreliable)' : '-'}"
+              "  y=${_dbgYMax?.toStringAsFixed(2) ?? '-'}\n"
               "Candidates: $_dbgRawCount seen / $_dbgConfirmedCount confirmed\n"
               "Server saw: ${_dbgFrameDims.length == 2 ? '${_dbgFrameDims[0]}x${_dbgFrameDims[1]}' : '-'}"
               "${_frameRotated ? ' (rotation fixed)' : ''}\n"

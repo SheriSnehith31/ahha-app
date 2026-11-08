@@ -51,7 +51,28 @@ class AlertOutput {
 }
 
 class AlertPolicy {
-  AlertPolicy({this.mediumPerMinute = 9, this.highPerMinute = 12});
+  AlertPolicy({
+    this.mediumPerMinute = 9,
+    this.highPerMinute = 12,
+    this.speakBands = false,
+    this.criticalSpeechGap = Duration.zero,
+  });
+
+  /// Minimum time before the SAME critical hazard in the SAME band is spoken
+  /// again. Speech only: the critical haptic still fires on every frame, and a
+  /// new hazard, a new band, or the first sighting is spoken immediately.
+  /// Zero (the default) keeps the original "critical is spoken every time".
+  /// The app sets this because widening the distance bands promotes more
+  /// objects to critical, and an unlimited critical would repeat "Stop. Car
+  /// ahead." about once a second for as long as the car stays in view.
+  final Duration criticalSpeechGap;
+  final Map<String, DateTime> _lastCriticalSpoken = {};
+
+  /// Say "very close / close / ahead" instead of a number of feet. The app
+  /// turns this on because the distance estimate is not trustworthy enough to
+  /// read out (phone tests showed ~1.5x over-estimates). Default off keeps the
+  /// original wording that the older tests pin.
+  final bool speakBands;
 
   // Speech budget (utterances per rolling minute). Medium is capped below
   // high so capacity is always left for the alerts that matter; critical is
@@ -61,11 +82,14 @@ class AlertPolicy {
 
   final Map<String, int> _lastDist = {};
   final Map<String, AlertTier> _lastTier = {};
+  final Map<String, Proximity> _lastProx = {};
   final List<DateTime> _spoken = [];
 
   void reset() {
     _lastDist.clear();
     _lastTier.clear();
+    _lastProx.clear();
+    _lastCriticalSpoken.clear();
     _spoken.clear();
   }
 
@@ -76,6 +100,8 @@ class AlertPolicy {
   void forgetAnnounced() {
     _lastDist.clear();
     _lastTier.clear();
+    _lastProx.clear();
+    _lastCriticalSpoken.clear();
   }
 
   int utterancesLastMinute(DateTime now) {
@@ -87,7 +113,7 @@ class AlertPolicy {
 
   /// Wording. Very near = urgent and distance-free (the number can't be
   /// trusted that close anyway); otherwise "Chair ahead, 8 feet."
-  static String speechFor(Candidate c) {
+  static String speechFor(Candidate c, {bool bands = false}) {
     if (c.tag == kPathBlockedTag) return 'Path blocked ahead.';
     final label = _cap(c.label);
     if (c.tier == AlertTier.critical) {
@@ -100,6 +126,13 @@ class AlertPolicy {
     };
     if (c.proximity == Proximity.veryNear) {
       return side == null ? '$label very close ahead.' : '$label very close $side.';
+    }
+    if (bands) {
+      // No number: "close" for the near band, plain "ahead" for far.
+      if (c.proximity == Proximity.near) {
+        return side == null ? '$label close ahead.' : '$label close $side.';
+      }
+      return side == null ? '$label ahead.' : '$label $side.';
     }
     final dist = c.distFeet.round();
     return side == null ? '$label ahead, $dist feet.' : '$label $side, $dist feet.';
@@ -165,7 +198,7 @@ class AlertPolicy {
   /// and this alert can't preempt it. It is not counted as spoken and is not
   /// marked announced, so it speaks on a later frame instead of being lost.
   AlertOutput decide(Candidate c, DateTime now, {bool ttsBusy = false}) {
-    final speech = speechFor(c);
+    final speech = speechFor(c, bands: speakBands);
     final dist = c.distFeet.round();
     final tier = c.tier;
 
@@ -173,9 +206,15 @@ class AlertPolicy {
     if (tier != AlertTier.critical) {
       final lastD = _lastDist[c.tag];
       final lastT = _lastTier[c.tag];
+      final lastP = _lastProx[c.tag];
+      // "Nothing changed" = same tier and, in band mode, the same band; with
+      // numbers, a distance within 1 ft.
+      final unchanged = lastD != null &&
+          lastT == tier &&
+          (speakBands ? lastP == c.proximity : (lastD - dist).abs() < 1);
       if (ttsBusy) {
         reason = 'busy';
-      } else if (c.tag != kPathBlockedTag && lastD != null && lastT == tier && (lastD - dist).abs() < 1) {
+      } else if (c.tag != kPathBlockedTag && unchanged) {
         // (A blocked path has no distance to compare, and it must be able to
         // repeat; its own 5 s limit and the speech budget keep it in check.)
         reason = 'no change';
@@ -183,13 +222,23 @@ class AlertPolicy {
         final limit = tier == AlertTier.high ? highPerMinute : mediumPerMinute;
         if (utterancesLastMinute(now) >= limit) reason = 'budget';
       }
+    } else if (criticalSpeechGap > Duration.zero) {
+      final lastAt = _lastCriticalSpoken[c.tag];
+      if (lastAt != null &&
+          now.difference(lastAt) < criticalSpeechGap &&
+          _lastTier[c.tag] == tier &&
+          _lastProx[c.tag] == c.proximity) {
+        reason = 'repeat';
+      }
     }
 
     final speak = reason == null;
     if (speak) {
+      if (tier == AlertTier.critical) _lastCriticalSpoken[c.tag] = now;
       _spoken.add(now);
       _lastDist[c.tag] = dist;
       _lastTier[c.tag] = tier;
+      _lastProx[c.tag] = c.proximity;
     }
 
     return AlertOutput(
