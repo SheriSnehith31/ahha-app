@@ -302,7 +302,9 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
     fovVDeg: 63.0,
     yHorizon: 0.5,
   );
-  final DetectionPipeline _pipeline = DetectionPipeline(distanceModel: _distanceModel);
+  // kFieldPipelineConfig (lib/detection_logic.dart) holds every threshold
+  // tuned from real phone testing, in one place.
+  final DetectionPipeline _pipeline = DetectionPipeline(distanceModel: _distanceModel, config: kFieldPipelineConfig);
   final double _darknessThreshold = 40.0;
 
   // Models are called concurrently, one hosted call each. The API key lives

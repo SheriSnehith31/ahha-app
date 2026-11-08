@@ -157,6 +157,15 @@ class PipelineConfig {
     this.debounceVeryNear = const Duration(seconds: 1),
     this.debounceNear = const Duration(seconds: 2),
     this.debounceFar = const Duration(seconds: 3),
+    // Stricter confirmation for hazards below severity 3 (chairs, desks,
+    // stairs up, people ...). Severity-3 hazards (stairs down, vehicles) always
+    // use confirmWindow/confirmNeeded and the fast path above, so they are
+    // never made slower by this.
+    this.lowSevConfirmWindow = 3,
+    this.lowSevConfirmNeeded = 2,
+    // Per-hazard confidence floors, applied on top of minConf (the higher wins).
+    this.minConfByTag = const {},
+    this.minConfByLabel = const {},
   });
 
   final double minConf;
@@ -172,13 +181,45 @@ class PipelineConfig {
   final Duration debounceVeryNear;
   final Duration debounceNear;
   final Duration debounceFar;
+  final int lowSevConfirmWindow;
+  final int lowSevConfirmNeeded;
+  final Map<String, double> minConfByTag;
+  final Map<String, double> minConfByLabel;
 
   Duration debounceFor(Proximity p) => switch (p) {
         Proximity.veryNear => debounceVeryNear,
         Proximity.near => debounceNear,
         Proximity.far => debounceFar,
       };
+
+  double minConfFor(String tag, String label) {
+    var m = minConf;
+    final t = minConfByTag[tag];
+    if (t != null && t > m) m = t;
+    final l = minConfByLabel[label];
+    if (l != null && l > m) m = l;
+    return m;
+  }
 }
+
+/// The configuration the app actually runs with. Everything tunable from real
+/// phone testing is here, in one place. [PipelineConfig]'s own defaults are the
+/// original (pre-phone-test) values, kept so the older unit tests still pin the
+/// original behaviour.
+const PipelineConfig kFieldPipelineConfig = PipelineConfig(
+  // Chairs, desks, stairs up, people: 3 of the last 5 frames. Stairs down and
+  // vehicles keep 2 of 3 and the 0.85 fast path (fastPathConf above).
+  lowSevConfirmWindow: 5,
+  lowSevConfirmNeeded: 3,
+  // Seen on a real phone: "DESK 74%" and "STAIRS UP 45%" on plain floor.
+  // Stairs-up floor sits above the 45% false alarm; the stairs model's correct
+  // detections were verified at 32-65% (lib/main.dart, _stairsSpec), so this
+  // will also drop some genuine up-stairs below 55%. Stairs up is severity 2,
+  // not a drop, so that trade is accepted. Desk floor sits above the 74% false
+  // alarm. Both are single observations: weak evidence, see KNOWN_LIMITS.md.
+  minConfByTag: {'stairs_up': 0.55},
+  minConfByLabel: {'desk': 0.80},
+);
 
 Proximity proximityFor(double distFeet, bool clipped, PipelineConfig c) {
   if (clipped || distFeet <= c.veryNearFeet) return Proximity.veryNear;
@@ -236,9 +277,15 @@ class DetectionPipeline {
     return p != 0 ? p : b.conf.compareTo(a.conf);
   }
 
+  int get _historySize => math.max(config.confirmWindow, config.lowSevConfirmWindow);
+
   bool _isConfirmed(Candidate c) {
-    if (c.severity >= 3 && c.conf >= config.fastPathConf) return true;
-    return _history.where((s) => s.contains(c.tag)).length >= config.confirmNeeded;
+    final severe = c.severity >= 3;
+    if (severe && c.conf >= config.fastPathConf) return true;
+    final window = severe ? config.confirmWindow : config.lowSevConfirmWindow;
+    final needed = severe ? config.confirmNeeded : config.lowSevConfirmNeeded;
+    final recent = _history.length > window ? _history.sublist(_history.length - window) : _history;
+    return recent.where((s) => s.contains(c.tag)).length >= needed;
   }
 
   PipelineResult process(List<Map<String, dynamic>> detections, DateTime now) {
@@ -250,7 +297,9 @@ class DetectionPipeline {
     cands.sort(_byPriorityThenConf);
 
     _history.add(cands.map((c) => c.tag).toSet());
-    if (_history.length > config.confirmWindow) _history.removeAt(0);
+    while (_history.length > _historySize) {
+      _history.removeAt(0);
+    }
 
     // Buffer this frame's best reading for each tag (cands is sorted, so the
     // first per tag is the highest-priority/most confident). Buffers for tags
@@ -319,7 +368,7 @@ class DetectionPipeline {
     final model = det['model'] as String? ?? '-';
 
     final conf = box[4];
-    if (conf < config.minConf) return null;
+    if (conf < config.minConfFor(tag, label)) return null;
 
     final xCenter = (box[0] + box[2]) / 2.0;
     final yMax = box[3];
