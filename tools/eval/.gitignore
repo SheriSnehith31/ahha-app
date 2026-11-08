@@ -1,0 +1,2 @@
+# Raw API responses. Keep them locally: deleting them means paying for the calls again.
+cache/

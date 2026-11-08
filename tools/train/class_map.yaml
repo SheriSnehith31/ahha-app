@@ -1,0 +1,116 @@
+# Proposed class map: DRAFT, NOT CONFIRMED. Nothing will be merged until you confirm.
+#
+# Maps each source dataset's classes to OUR classes. A class that is not mapped is
+# dropped (null). Evidence for each choice is in datasets_overview.md.
+#
+# status values:
+#   map        - proposed mapping from the class name, with evidence
+#   map_relabel- proposed mapping that goes AGAINST the class name (needs your OK)
+#   decide     - I cannot map this without guessing; your decision is needed
+#   exclude    - recommended not to use
+#
+# RULE (yours): a single "stairs" class is never assigned up or down by guessing.
+
+version: 1
+status: draft_awaiting_confirmation
+
+our_classes:
+  stairs:
+    - stairs_down
+    - stairs_up
+  objects:                      # no object datasets chosen yet; see object_candidates.md
+    - car
+    - person
+    - chair
+    - pothole
+  note: >
+    The app also alerts on bus, truck, motorcycle, bicycle, dog, bench, fire hydrant,
+    desk and door. No candidate datasets were looked up for those, per your request
+    (car, person, chair, pothole only).
+
+decisions_needed:
+  - id: 1
+    question: >
+      In stairs_detection-9av4i, relabel the classes 0, 1, 2 and stairs as stairs_up?
+      Evidence: 12/12 viewed samples show stairs going up, and 17/17 images shared with
+      up_down_stairs are labelled upstair there. This is a relabel, not a rename.
+    default_if_no_answer: exclude those four classes (keep only downstair and upstair)
+  - id: 2
+    question: Exclude hohyoo/yolo_stairs (labelled objects are kerbs, not stairs)?
+    default_if_no_answer: exclude
+  - id: 3
+    question: >
+      The single-class sets (khairul, talov, 7datn, up_down_stairs_v2) have no direction.
+      Exclude them (default), or add a third class "stairs_unknown" that the app would
+      not alert on? Not mapped to up or down either way.
+    default_if_no_answer: exclude
+  - id: 4
+    question: >
+      Where the same image appears in both stairs_detection-9av4i and up_down_stairs
+      with different labels, keep the up_down_stairs copy (cleaner labels)?
+    default_if_no_answer: keep the up_down_stairs copy
+  - id: 5
+    question: >
+      itlabroom/updown-u2klg and object-detection-7datn/stairs-hnoru-xyslu report no
+      generated version. Try to export them anyway, or skip them?
+    default_if_no_answer: try once; skip and say so if it fails
+
+datasets:
+
+  "hohyoo/yolo_stairs":
+    license: "CC BY 4.0"
+    classes:
+      "stairs": {map_to: null, status: exclude, reason: "single class; 3/3 annotated samples viewed are kerbs, not stairs"}
+
+  "khairul-kadir/stair-detection-wn5rk":
+    license: "CC BY 4.0"
+    classes:
+      "stair": {map_to: null, status: decide, reason: "single class, 49 images; viewed samples show stairs under construction behind red netting"}
+
+  "talov-ricardo/stairs-mkgsj":
+    license: "CC BY 4.0"
+    classes:
+      "Stairs": {map_to: null, status: decide, reason: "single class, no direction. The 4 samples viewed all look like stairs going up, but 4 of 200 is not enough to assign a direction, so it is not guessed"}
+
+  "object-detection-7datn/stairs-hnoru-xyslu":
+    license: "not listed for this project"
+    classes:
+      "stairs": {map_to: null, status: decide, reason: "single class; no license listed; no generated version (export may fail)"}
+
+  "stairs-blind/stairs_detection-9av4i":
+    license: "MIT"
+    classes:
+      "downstair": {map_to: stairs_down, status: map, reason: "3/3 viewed look down a flight; 10/10 shared images are downstair in up_down_stairs too"}
+      "upstair":   {map_to: stairs_up,   status: map, reason: "viewed: 2 clear, 1 ambiguous forest path; 12/12 shared images are upstair in up_down_stairs"}
+      "0":         {map_to: stairs_up,   status: map_relabel, reason: "viewed 3/3 stairs going up; 2/2 shared images are upstair in up_down_stairs"}
+      "1":         {map_to: stairs_up,   status: map_relabel, reason: "viewed 3/3 stairs going up; 3/3 shared images are upstair in up_down_stairs"}
+      "2":         {map_to: stairs_up,   status: map_relabel, reason: "viewed 3/3 stairs going up; 3/3 shared images are upstair in up_down_stairs"}
+      "stairs":    {map_to: stairs_up,   status: map_relabel, reason: "viewed 3/3 stairs going up; 9/9 shared images are upstair in up_down_stairs"}
+
+  "stairs-blind/up_down_stairs_v2":
+    license: "CC BY 4.0"
+    classes:
+      "stairs": {map_to: null, status: exclude, reason: "single class that mixes up and down (viewed 4: at least one each way)"}
+
+  "stairs-blind/up_down_stairs":
+    license: "CC BY 4.0"
+    note: "shares images with stairs_detection-9av4i; see decision 4"
+    classes:
+      "downstair": {map_to: stairs_down, status: map, reason: "class name; viewed (same images as above)"}
+      "upstair":   {map_to: stairs_up,   status: map, reason: "class name; viewed (same images as above)"}
+
+  "itlabroom/updown-u2klg":
+    license: "CC BY 4.0"
+    note: "no generated version; contains augmented-looking images; see decision 5"
+    classes:
+      "downstairs": {map_to: stairs_down, status: map, reason: "class name; 3/3 viewed look down a flight (one is a hillside path, ambiguous)"}
+      "upstairs":   {map_to: stairs_up,   status: map, reason: "class name; 3/3 viewed go up"}
+
+  "itlabroom/upstairs-detection-dataset":
+    license: "CC BY 4.0"
+    note: "looks like a subset of itlabroom/updown-u2klg; expect almost all duplicates"
+    classes:
+      "upstairs": {map_to: stairs_up, status: map, reason: "class name; 12/12 sampled image IDs also appear in updown-u2klg as upstairs"}
+
+# Object datasets: none chosen. They are listed in object_candidates.md and will be
+# added here only after you confirm which to use.
