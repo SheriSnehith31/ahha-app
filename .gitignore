@@ -53,3 +53,7 @@ lib/config.dart
 # local backups and crash logs
 *.apk
 hs_err_pid*.log
+
+# Understand-Anything knowledge graph output
+.understand-anything/
+.ua/

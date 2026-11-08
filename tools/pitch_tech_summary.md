@@ -1,5 +1,12 @@
 # AHHA: technical summary for the pitch slide
 
+> **OUT OF DATE after the real-phone fixes (branch `v2-fixes`).** Line numbers below are from
+> before those changes, and these facts have changed: confirmation is now 3 of the last 5
+> frames below severity 3; distance is shown as bands and the band thresholds are 1.5x (a
+> stopgap); alerts add "Path blocked ahead."; the dark-camera message is now "Camera can't see
+> ahead. Stop and check."; an on-device furniture detector was added (INDOOR); test counts are
+> higher. See `KNOWN_LIMITS.md`. Regenerate this file before using it.
+
 Everything below was read from the code in this repo or measured by running the test
 suites on 2026-11-08. Where something is not in the code it says **not found**.
 File:line references are to the files as they are today.

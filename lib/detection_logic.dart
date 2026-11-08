@@ -16,8 +16,12 @@ int tierPriority(AlertTier t) => switch (t) {
 // camera can see the floor).
 enum Proximity { veryNear, near, far }
 
+/// Policy tag of the label-free "Path blocked ahead." alert (lib/path_blocked.dart).
+const String kPathBlockedTag = 'path_blocked';
+
 // How dangerous a hazard type is if you walk into it (3 = worst).
 const Map<String, int> kHazardSeverity = {
+  kPathBlockedTag: 2, // never critical
   'stairs_down': 3, // drop-off
   'vehicle': 3, // car, bus, truck, motorcycle
   'stairs_up': 2,
@@ -157,6 +161,24 @@ class PipelineConfig {
     this.debounceVeryNear = const Duration(seconds: 1),
     this.debounceNear = const Duration(seconds: 2),
     this.debounceFar = const Duration(seconds: 3),
+    // Stricter confirmation for hazards below severity 3 (chairs, desks,
+    // stairs up, people ...). Severity-3 hazards (stairs down, vehicles) always
+    // use confirmWindow/confirmNeeded and the fast path above, so they are
+    // never made slower by this.
+    this.lowSevConfirmWindow = 3,
+    this.lowSevConfirmNeeded = 2,
+    // Per-hazard confidence floors, applied on top of minConf (the higher wins).
+    this.minConfByTag = const {},
+    this.minConfByLabel = const {},
+    // Replaces minConf for detections from a given source model (the `model`
+    // key of a detection), e.g. the on-device furniture detector.
+    this.minConfByModel = const {},
+    // When set, the repeat interval is chosen from these ESTIMATED distances
+    // instead of from the proximity band, so widening the bands (see
+    // kFieldPipelineConfig) makes alerts stronger and earlier without making
+    // the same object repeat more often.
+    this.repeatVeryNearFeet,
+    this.repeatNearFeet,
   });
 
   final double minConf;
@@ -172,13 +194,78 @@ class PipelineConfig {
   final Duration debounceVeryNear;
   final Duration debounceNear;
   final Duration debounceFar;
+  final int lowSevConfirmWindow;
+  final int lowSevConfirmNeeded;
+  final Map<String, double> minConfByTag;
+  final Map<String, double> minConfByLabel;
+  final Map<String, double> minConfByModel;
+  final double? repeatVeryNearFeet;
+  final double? repeatNearFeet;
 
   Duration debounceFor(Proximity p) => switch (p) {
         Proximity.veryNear => debounceVeryNear,
         Proximity.near => debounceNear,
         Proximity.far => debounceFar,
       };
+
+  /// Repeat interval for a candidate: from the repeat distances when they are
+  /// set, otherwise from the candidate's own proximity band.
+  Duration debounceForCandidate(Candidate c) {
+    final vn = repeatVeryNearFeet;
+    final n = repeatNearFeet;
+    if (vn == null || n == null) return debounceFor(c.proximity);
+    if (c.clipped || c.distFeet <= vn) return debounceVeryNear;
+    if (c.distFeet <= n) return debounceNear;
+    return debounceFar;
+  }
+
+  double minConfFor(String tag, String label, {String? model}) {
+    var m = (model != null ? minConfByModel[model] : null) ?? minConf;
+    final t = minConfByTag[tag];
+    if (t != null && t > m) m = t;
+    final l = minConfByLabel[label];
+    if (l != null && l > m) m = l;
+    return m;
+  }
 }
+
+/// The configuration the app actually runs with. Everything tunable from real
+/// phone testing is here, in one place. [PipelineConfig]'s own defaults are the
+/// original (pre-phone-test) values, kept so the older unit tests still pin the
+/// original behaviour.
+///
+/// DISTANCE BANDS ARE A STOPGAP, NOT A CALIBRATION. The distance model
+/// (lib/main.dart `_distanceModel`) was fitted from two points with an
+/// unmeasured camera height, and phone testing showed it over-estimating: a
+/// chair about 4-5 ft away read 6.5-7.4 ft (roughly 1.5x too far, the unsafe
+/// direction). Instead of changing the model, the three distance thresholds
+/// below are simply 1.5x the originals (7 -> 10.5, 8.5 -> 12.75, 10 -> 15 ft of
+/// ESTIMATED distance), so "very near" and "near" fire earlier. Nothing here
+/// makes the estimates more accurate. When the model is properly calibrated,
+/// set them back to veryNearFeet 7, nearFeet 8.5, maxDistFeet 10.
+const PipelineConfig kFieldPipelineConfig = PipelineConfig(
+  maxDistFeet: 15.0,
+  veryNearFeet: 10.5,
+  nearFeet: 12.75,
+  // Repeat intervals still use the ORIGINAL 7 / 8.5 ft thresholds.
+  repeatVeryNearFeet: 7.0,
+  repeatNearFeet: 8.5,
+  // Chairs, desks, stairs up, people: 3 of the last 5 frames. Stairs down and
+  // vehicles keep 2 of 3 and the 0.85 fast path (fastPathConf above).
+  lowSevConfirmWindow: 5,
+  lowSevConfirmNeeded: 3,
+  // Seen on a real phone: "DESK 74%" and "STAIRS UP 45%" on plain floor.
+  // Stairs-up floor sits above the 45% false alarm; the stairs model's correct
+  // detections were verified at 32-65% (lib/main.dart, _stairsSpec), so this
+  // will also drop some genuine up-stairs below 55%. Stairs up is severity 2,
+  // not a drop, so that trade is accepted. Desk floor sits above the 74% false
+  // alarm. Both are single observations: weak evidence, see KNOWN_LIMITS.md.
+  minConfByTag: {'stairs_up': 0.55},
+  minConfByLabel: {'desk': 0.80},
+  // On-device furniture detector (lib/furniture_detection.dart): 0.30 for its
+  // six furniture classes. Every other source keeps minConf (0.40).
+  minConfByModel: {'device': 0.30},
+);
 
 Proximity proximityFor(double distFeet, bool clipped, PipelineConfig c) {
   if (clipped || distFeet <= c.veryNearFeet) return Proximity.veryNear;
@@ -193,7 +280,12 @@ class PipelineResult {
     this.alert,
     required this.rawCount,
     required this.confirmedCount,
+    this.centerCovered = false,
   });
+
+  /// A confirmed, non-info hazard is in the centre lane (so a generic "path
+  /// blocked" would only repeat what a labelled alert already says).
+  final bool centerCovered;
 
   final Candidate? display; // what the on-screen readout shows
   final double? displayDistFeet; // median-smoothed distance for the readout
@@ -236,9 +328,15 @@ class DetectionPipeline {
     return p != 0 ? p : b.conf.compareTo(a.conf);
   }
 
+  int get _historySize => math.max(config.confirmWindow, config.lowSevConfirmWindow);
+
   bool _isConfirmed(Candidate c) {
-    if (c.severity >= 3 && c.conf >= config.fastPathConf) return true;
-    return _history.where((s) => s.contains(c.tag)).length >= config.confirmNeeded;
+    final severe = c.severity >= 3;
+    if (severe && c.conf >= config.fastPathConf) return true;
+    final window = severe ? config.confirmWindow : config.lowSevConfirmWindow;
+    final needed = severe ? config.confirmNeeded : config.lowSevConfirmNeeded;
+    final recent = _history.length > window ? _history.sublist(_history.length - window) : _history;
+    return recent.where((s) => s.contains(c.tag)).length >= needed;
   }
 
   PipelineResult process(List<Map<String, dynamic>> detections, DateTime now) {
@@ -250,7 +348,9 @@ class DetectionPipeline {
     cands.sort(_byPriorityThenConf);
 
     _history.add(cands.map((c) => c.tag).toSet());
-    if (_history.length > config.confirmWindow) _history.removeAt(0);
+    while (_history.length > _historySize) {
+      _history.removeAt(0);
+    }
 
     // Buffer this frame's best reading for each tag (cands is sorted, so the
     // first per tag is the highest-priority/most confident). Buffers for tags
@@ -294,7 +394,7 @@ class DetectionPipeline {
     for (final c in confirmed) {
       if (c.tier == AlertTier.info) continue; // shown, never dispatched
       final last = _lastFired[c.tag];
-      final due = last == null || now.difference(last) >= config.debounceFor(c.proximity);
+      final due = last == null || now.difference(last) >= config.debounceForCandidate(c);
       if (due || c.tier == AlertTier.critical) {
         alert = c;
         break;
@@ -308,6 +408,7 @@ class DetectionPipeline {
       alert: alert,
       rawCount: cands.length,
       confirmedCount: confirmed.length,
+      centerCovered: confirmed.any((c) => c.zone == 'center' && c.tier != AlertTier.info),
     );
   }
 
@@ -319,7 +420,7 @@ class DetectionPipeline {
     final model = det['model'] as String? ?? '-';
 
     final conf = box[4];
-    if (conf < config.minConf) return null;
+    if (conf < config.minConfFor(tag, label, model: model)) return null;
 
     final xCenter = (box[0] + box[2]) / 2.0;
     final yMax = box[3];
