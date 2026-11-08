@@ -16,8 +16,12 @@ int tierPriority(AlertTier t) => switch (t) {
 // camera can see the floor).
 enum Proximity { veryNear, near, far }
 
+/// Policy tag of the label-free "Path blocked ahead." alert (lib/path_blocked.dart).
+const String kPathBlockedTag = 'path_blocked';
+
 // How dangerous a hazard type is if you walk into it (3 = worst).
 const Map<String, int> kHazardSeverity = {
+  kPathBlockedTag: 2, // never critical
   'stairs_down': 3, // drop-off
   'vehicle': 3, // car, bus, truck, motorcycle
   'stairs_up': 2,
@@ -234,7 +238,12 @@ class PipelineResult {
     this.alert,
     required this.rawCount,
     required this.confirmedCount,
+    this.centerCovered = false,
   });
+
+  /// A confirmed, non-info hazard is in the centre lane (so a generic "path
+  /// blocked" would only repeat what a labelled alert already says).
+  final bool centerCovered;
 
   final Candidate? display; // what the on-screen readout shows
   final double? displayDistFeet; // median-smoothed distance for the readout
@@ -357,6 +366,7 @@ class DetectionPipeline {
       alert: alert,
       rawCount: cands.length,
       confirmedCount: confirmed.length,
+      centerCovered: confirmed.any((c) => c.zone == 'center' && c.tier != AlertTier.info),
     );
   }
 

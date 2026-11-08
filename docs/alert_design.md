@@ -163,7 +163,7 @@ exactly like "no hazards".
 
 | Condition | Detected by | Says (once) | Then |
 |---|---|---|---|
-| Camera dark or covered | frame brightness below threshold | "Camera can't see. Check your phone." | haptic reminder every 5 s |
+| Camera dark or covered | frame brightness below threshold | "Camera can't see ahead. Stop and check." (reworded after phone testing: a dark wall against the lens looks the same as a covered camera, so it doubles as a warning) | haptic reminder every 5 s |
 | **Detection offline** (no signal, bad key, quota used up) | every model call failed for 3 frames in a row | "Detection offline. Use your cane." | haptic reminder every 5 s |
 | Recovered | a model answers again | "Detection restored." (offline only) | reminders stop |
 

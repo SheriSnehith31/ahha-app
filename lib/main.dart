@@ -12,6 +12,7 @@ import 'package:image/image.dart' as img;
 import 'alert_policy.dart';
 import 'config.dart';
 import 'detection_logic.dart';
+import 'path_blocked.dart';
 
 late List<CameraDescription> cameras;
 
@@ -110,9 +111,9 @@ Future<void> main() async {
 // random-looking detections and meaningless box positions — and (b) compute
 // a 0-255 brightness proxy (NOT calibrated lux). The original bytes are
 // returned untouched when no rotation is needed, to skip a re-encode.
-Map<String, Object> prepareFrameIsolate(Uint8List jpegBytes) {
+Map<String, Object?> prepareFrameIsolate(Uint8List jpegBytes) {
   final decoded = img.decodeJpg(jpegBytes);
-  if (decoded == null) return {'lum': 0.0, 'jpeg': jpegBytes, 'rotated': false};
+  if (decoded == null) return {'lum': 0.0, 'jpeg': jpegBytes, 'rotated': false, 'plainCb': null, 'plainAll': null};
 
   final ifd = decoded.exif.imageIfd;
   final needsBake = ifd.hasOrientation && ifd.orientation != null && ifd.orientation != 1;
@@ -128,10 +129,29 @@ Map<String, Object> prepareFrameIsolate(Uint8List jpegBytes) {
       count++;
     }
   }
+  // Label-free "plain wall" statistic. Only computed when that check is
+  // switched on (it ships off, see lib/path_blocked.dart).
+  double? plainCenterBottom;
+  double? plainAll;
+  if (kLabelFreeWallCheck) {
+    final grid = img.copyResize(upright, width: 64, height: 48, interpolation: img.Interpolation.average);
+    final gray = List<int>.filled(grid.width * grid.height, 0);
+    for (int y = 0; y < grid.height; y++) {
+      for (int x = 0; x < grid.width; x++) {
+        final p = grid.getPixel(x, y);
+        gray[y * grid.width + x] = (0.299 * p.r + 0.587 * p.g + 0.114 * p.b).round();
+      }
+    }
+    final stats = plainStatsFromGray(gray, grid.width, grid.height);
+    plainCenterBottom = stats.edgeFractionCenterBottom;
+    plainAll = stats.edgeFractionAll;
+  }
   return {
     'lum': count == 0 ? 0.0 : total / count,
     'jpeg': needsBake ? Uint8List.fromList(img.encodeJpg(upright, quality: 85)) : jpegBytes,
     'rotated': needsBake,
+    'plainCb': plainCenterBottom,
+    'plainAll': plainAll,
   };
 }
 
@@ -182,6 +202,7 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
   // Evaluation record (copyable from the debug panel) for measuring cognitive
   // load, suppression, latency and fail-safe events after a session.
   final AlertLog _log = AlertLog();
+  final PathBlockedDetector _blocked = PathBlockedDetector();
   AlertTier? _currentSpeakingTier;
   bool _inDegradedState = false; // camera dark/blocked
   Timer? _degradedChimeTimer;
@@ -282,8 +303,10 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
 
   // Fail-safe phrasing candidates for Tier 2 A/B testing — change the
   // index to switch which one fires during a session.
+  // Index 0 is the live one. A black wall right against the lens looks the
+  // same as a covered camera, so the wording works as a warning too: stop.
   static const List<String> _failSafePhrasings = [
-    "Camera can't see. Check your phone.",
+    "Camera can't see ahead. Stop and check.",
     "Too dark to detect hazards. Use your cane.",
     "Vision degraded, check camera.",
   ];
@@ -396,6 +419,7 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
     final ignored = <String>[];
     final frameDims = <int>[];
     final notes = <String>[];
+    final rawBoxes = <List<double>>[]; // every detection of every class, for the path-blocked check
     final specs = _specsFor(_mode);
     final results = await Future.wait([
       for (final spec in specs)
@@ -405,6 +429,7 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
           ignoredOut: ignored,
           frameDimsOut: frameDims,
           noteOut: notes,
+          rawBoxesOut: rawBoxes,
         ),
     ]);
 
@@ -423,7 +448,16 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
     _failStreak = 0;
     _exitOfflineStateIfNeeded();
 
-    _processDetections([for (final r in results) ...?r]);
+    final plainCb = frame['plainCb'] as double?;
+    final plainAll = frame['plainAll'] as double?;
+    _processDetections(
+      [for (final r in results) ...?r],
+      rawBoxes: rawBoxes,
+      luminance: avgLuminance,
+      plain: (plainCb != null && plainAll != null)
+          ? PlainStats(edgeFractionCenterBottom: plainCb, edgeFractionAll: plainAll)
+          : null,
+    );
   }
 
   // One model call. Returns null when the call FAILED (network, timeout,
@@ -436,6 +470,7 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
     required List<String> ignoredOut,
     required List<int> frameDimsOut,
     required List<String> noteOut,
+    required List<List<double>> rawBoxesOut,
   }) async {
     final modelLabel = spec.label;
     try {
@@ -465,6 +500,19 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
       final out = <Map<String, dynamic>>[];
       for (final p in predictions) {
         final rawClass = p["class"] as String;
+        // Class-agnostic copy for the path-blocked check: taken BEFORE the
+        // allow/ignore lists, because a huge box of anything blocks the path.
+        {
+          final bx = (p["x"] as num).toDouble(), by = (p["y"] as num).toDouble();
+          final bw = (p["width"] as num).toDouble(), bh = (p["height"] as num).toDouble();
+          rawBoxesOut.add([
+            (bx - bw / 2) / frameWidth,
+            (by - bh / 2) / frameHeight,
+            (bx + bw / 2) / frameWidth,
+            (by + bh / 2) / frameHeight,
+            (p["confidence"] as num).toDouble(),
+          ]);
+        }
         if (spec.only != null && !spec.only!.contains(rawClass)) continue;
         if (spec.ignore.contains(rawClass)) {
           ignoredOut.add(rawClass);
@@ -561,10 +609,33 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
   // All the filtering, distance, tiering, multi-frame confirmation and
   // debounce lives in DetectionPipeline (lib/detection_logic.dart, unit
   // tested). This just applies its result to the UI and dispatches alerts.
-  void _processDetections(List<Map<String, dynamic>> results) {
-    final r = _pipeline.process(results, DateTime.now());
+  void _processDetections(
+    List<Map<String, dynamic>> results, {
+    List<List<double>> rawBoxes = const [],
+    double luminance = 255,
+    PlainStats? plain,
+  }) {
+    final now = DateTime.now();
+    final r = _pipeline.process(results, now);
 
-    if (r.alert != null) _dispatchAlert(r.alert!);
+    // Priority: critical hazard (stairs down / vehicle) > path blocked >
+    // everything else. Only one thing is dispatched per frame, so only one
+    // speech starts. Path blocked stays quiet when a critical alert is going
+    // out, or when a labelled hazard already covers the walking lane.
+    final critical = r.alert?.tier == AlertTier.critical;
+    final blocked = _blocked.update(
+      boxes: rawBoxes,
+      plain: plain,
+      luminance: luminance,
+      now: now,
+      laneCoveredByLabel: r.centerCovered,
+      criticalActive: critical,
+    );
+    if (blocked != null) {
+      _dispatchAlert(blockedPathCandidate());
+    } else if (r.alert != null) {
+      _dispatchAlert(r.alert!);
+    }
 
     final d = r.display;
     _dbgRawCount = r.rawCount;
@@ -664,6 +735,7 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
     setState(() {
       _mode = _mode == DetectMode.street ? DetectMode.indoor : DetectMode.street;
       _pipeline.reset();
+      _blocked.reset();
       _policy.reset();
       _dbgTag = "no detection";
       _dbgLabel = "-";
@@ -866,9 +938,11 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
                   style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
                 ),
                 Text(
-                  _bannerClipped
-                      ? "${_bannerZone.toUpperCase()} - UNDER $_bannerDist FT"
-                      : "${_bannerZone.toUpperCase()} - $_bannerDist FT",
+                  _bannerDist <= 0
+                      ? _bannerZone.toUpperCase() // path blocked: no distance
+                      : _bannerClipped
+                          ? "${_bannerZone.toUpperCase()} - UNDER $_bannerDist FT"
+                          : "${_bannerZone.toUpperCase()} - $_bannerDist FT",
                   style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w600),
                 ),
                 const SizedBox(height: 2),
@@ -950,7 +1024,10 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
                 onTap: () => setState(() {
                   _isPaused = !_isPaused;
                   // Stale multi-frame history must not carry across a pause.
-                  if (!_isPaused) _pipeline.reset();
+                  if (!_isPaused) {
+                    _pipeline.reset();
+                    _blocked.reset();
+                  }
                 }),
               ),
             ],

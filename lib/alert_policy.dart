@@ -88,6 +88,7 @@ class AlertPolicy {
   /// Wording. Very near = urgent and distance-free (the number can't be
   /// trusted that close anyway); otherwise "Chair ahead, 8 feet."
   static String speechFor(Candidate c) {
+    if (c.tag == kPathBlockedTag) return 'Path blocked ahead.';
     final label = _cap(c.label);
     if (c.tier == AlertTier.critical) {
       return c.tag == 'stairs_down' ? 'Stop. Stairs down.' : 'Stop. $label ahead.';
@@ -174,7 +175,9 @@ class AlertPolicy {
       final lastT = _lastTier[c.tag];
       if (ttsBusy) {
         reason = 'busy';
-      } else if (lastD != null && lastT == tier && (lastD - dist).abs() < 1) {
+      } else if (c.tag != kPathBlockedTag && lastD != null && lastT == tier && (lastD - dist).abs() < 1) {
+        // (A blocked path has no distance to compare, and it must be able to
+        // repeat; its own 5 s limit and the speech budget keep it in check.)
         reason = 'no change';
       } else {
         final limit = tier == AlertTier.high ? highPerMinute : mediumPerMinute;
