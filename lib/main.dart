@@ -241,7 +241,9 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
   // dispatch attempt, any tier, independent of the banner's critical/high
   // gating below.
   String _lastHapticDescription = "-";
-  String _lastSpokenText = "-";
+  // The "Audio:" line. Only written when speech is really issued (alerts and
+  // fail-safes alike), so it can never show stale or never-spoken text.
+  final SpokenLine _spokenLine = SpokenLine();
 
   // High-priority visual hazard banner — data-driven from the same hazard
   // map _dispatchAlert built, not a separately-typed wording path. Timer
@@ -510,7 +512,8 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
     _vibrate([0, 200, 150, 200]);
     _lastHapticDescription = "DEGRADED VISION PULSE";
     final phrase = _failSafePhrasings[_activeFailSafeIndex];
-    _lastSpokenText = phrase;
+    _spokenLine.record(phrase, audible: _audioEnabled);
+    _policy.forgetAnnounced(); // the fail-safe spoke in between: re-announce hazards
     _speak(phrase);
 
     _degradedChimeTimer = Timer.periodic(const Duration(seconds: 5), (_) {
@@ -535,7 +538,8 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
     _log.failsafe("detection_offline", on: true, now: DateTime.now());
     _vibrate([0, 200, 150, 200]);
     _lastHapticDescription = "OFFLINE REMINDER PULSE";
-    _lastSpokenText = _offlinePhrase;
+    _spokenLine.record(_offlinePhrase, audible: _audioEnabled);
+    _policy.forgetAnnounced();
     _speak(_offlinePhrase);
     _offlineTimer = Timer.periodic(const Duration(seconds: 5), (_) {
       _vibrate([0, 200, 150, 200]);
@@ -548,7 +552,8 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
     _inOfflineState = false;
     _log.failsafe("detection_offline", on: false, now: DateTime.now());
     _offlineTimer?.cancel();
-    _lastSpokenText = _restoredPhrase;
+    _spokenLine.record(_restoredPhrase, audible: _audioEnabled);
+    _policy.forgetAnnounced();
     _speak(_restoredPhrase);
     if (mounted) setState(() {});
   }
@@ -641,9 +646,9 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
       return;
     }
 
-    // Status readout shows the latest utterance even when AUDIO is off — lets
-    // you see what *would* have been said.
-    _lastSpokenText = out.speech;
+    // Status readout shows the latest utterance; with AUDIO off it is marked
+    // "(audio off)" so it is never mistaken for something actually said.
+    _spokenLine.record(out.speech, audible: _audioEnabled);
     if (mounted) setState(() {});
     if (!_audioEnabled) return;
 
@@ -670,7 +675,7 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
       _dbgModel = "-";
       _dbgClipped = false;
       _lastHapticDescription = "-";
-      _lastSpokenText = "-";
+      _spokenLine.clear();
     });
   }
 
@@ -893,7 +898,7 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
           ),
           const SizedBox(height: 4),
           Text(
-            'Audio: "$_lastSpokenText"',
+            'Audio: "${_spokenLine.text}"',
             style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
           ),
         ],

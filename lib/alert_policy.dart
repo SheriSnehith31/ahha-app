@@ -69,6 +69,15 @@ class AlertPolicy {
     _spoken.clear();
   }
 
+  /// Forget what each hazard was last announced as, but keep the speech
+  /// budget. Call when something else has spoken in between (a fail-safe), so
+  /// the "no change" rule cannot hide a hazard the user has not heard about
+  /// since the interruption.
+  void forgetAnnounced() {
+    _lastDist.clear();
+    _lastTier.clear();
+  }
+
   int utterancesLastMinute(DateTime now) {
     _spoken.removeWhere((t) => now.difference(t) > const Duration(seconds: 60));
     return _spoken.length;
@@ -189,6 +198,21 @@ class AlertPolicy {
       suppressedReason: reason,
     );
   }
+}
+
+/// The "Audio:" line on screen: always the last thing the app actually said
+/// (or, with AUDIO off, what it would have said, marked as such). Alerts whose
+/// speech was withheld never touch it, so it cannot show something stale or
+/// something that was never spoken.
+class SpokenLine {
+  String _text = '-';
+  String get text => _text;
+
+  void record(String spoken, {required bool audible}) {
+    _text = audible ? spoken : '(audio off) $spoken';
+  }
+
+  void clear() => _text = '-';
 }
 
 // ---------------------------------------------------------------------------
