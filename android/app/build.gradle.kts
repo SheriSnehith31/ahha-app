@@ -29,6 +29,12 @@ android {
         versionName = flutter.versionName
     }
 
+    // MediaPipe reads the .tflite model straight from the APK's assets, which
+    // needs it stored uncompressed.
+    androidResources {
+        noCompress += "tflite"
+    }
+
     buildTypes {
         release {
             // TODO: Add your own signing config for the release build.
@@ -46,4 +52,11 @@ kotlin {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // Google MediaPipe Object Detector (on-device furniture detection). Pinned
+    // to an exact version for reproducible builds; Google's docs use
+    // "latest.release", which was 1.2.2 when this was added.
+    implementation("com.google.mediapipe:tasks-vision:0.10.26.1")
 }

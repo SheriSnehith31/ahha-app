@@ -12,6 +12,7 @@ import 'package:image/image.dart' as img;
 import 'alert_policy.dart';
 import 'config.dart';
 import 'detection_logic.dart';
+import 'furniture_detection.dart';
 import 'path_blocked.dart';
 
 late List<CameraDescription> cameras;
@@ -205,6 +206,9 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
   // load, suppression, latency and fail-safe events after a session.
   final AlertLog _log = AlertLog();
   final PathBlockedDetector _blocked = PathBlockedDetector();
+  // On-device furniture detector (INDOOR only). Purely additive: if it fails
+  // or is slow the frame just continues with the Roboflow results.
+  final GuardedFurnitureDetector _furniture = GuardedFurnitureDetector(PlatformFurnitureSource());
   AlertTier? _currentSpeakingTier;
   bool _inDegradedState = false; // camera dark/blocked
   Timer? _degradedChimeTimer;
@@ -427,6 +431,8 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
     final notes = <String>[];
     final rawBoxes = <List<double>>[]; // every detection of every class, for the path-blocked check
     final specs = _specsFor(_mode);
+    // Started now so it runs alongside the Roboflow calls instead of after.
+    final deviceFuture = _mode == DetectMode.indoor ? _furniture.detect(uprightJpeg) : Future.value(null);
     final results = await Future.wait([
       for (final spec in specs)
         _fetchModelDetections(
@@ -456,8 +462,18 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
 
     final plainCb = frame['plainCb'] as double?;
     final plainAll = frame['plainAll'] as double?;
+
+    // Furniture from the device, merged into the Roboflow results (duplicates:
+    // same tag and IoU > 0.5, higher confidence wins). Null = it was
+    // unavailable this frame, which changes nothing.
+    final device = await deviceFuture ?? const <Map<String, dynamic>>[];
+    for (final d in device) {
+      rawBoxes.add([for (final v in d['box'] as List) (v as num).toDouble()]);
+    }
+    final merged = mergeDetections([for (final r in results) ...?r], device);
+
     _processDetections(
-      [for (final r in results) ...?r],
+      merged,
       rawBoxes: rawBoxes,
       luminance: avgLuminance,
       plain: (plainCb != null && plainAll != null)
@@ -745,6 +761,7 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
       _mode = _mode == DetectMode.street ? DetectMode.indoor : DetectMode.street;
       _pipeline.reset();
       _blocked.reset();
+      _furniture.reset();
       _policy.reset();
       _dbgTag = "no detection";
       _dbgLabel = "-";
@@ -1090,6 +1107,8 @@ class _HazardAssistantScreenState extends State<HazardAssistantScreen> {
               "Network: $_lastHttpNote${_failStreak > 0 ? ' (fail streak $_failStreak)' : ''}\n"
               "Vibration strength control: ${_hasAmplitude ? 'yes' : 'NO (rhythm only)'}\n"
               "Model: $_dbgModel\n"
+              "On-device furniture: ${_mode == DetectMode.indoor ? _furniture.status : 'n/a (street)'}"
+              "${_furniture.skippedBusy > 0 ? ' (skipped ${_furniture.skippedBusy})' : ''}\n"
               "Tag/Tier: $_dbgTag ($_dbgTier)\n"
               "Est. distance: ${_dbgDistFt != null ? '${_dbgDistFt!.toStringAsFixed(1)} ft (unreliable)' : '-'}"
               "  y=${_dbgYMax?.toStringAsFixed(2) ?? '-'}\n"

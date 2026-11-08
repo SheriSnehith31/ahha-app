@@ -170,6 +170,9 @@ class PipelineConfig {
     // Per-hazard confidence floors, applied on top of minConf (the higher wins).
     this.minConfByTag = const {},
     this.minConfByLabel = const {},
+    // Replaces minConf for detections from a given source model (the `model`
+    // key of a detection), e.g. the on-device furniture detector.
+    this.minConfByModel = const {},
     // When set, the repeat interval is chosen from these ESTIMATED distances
     // instead of from the proximity band, so widening the bands (see
     // kFieldPipelineConfig) makes alerts stronger and earlier without making
@@ -195,6 +198,7 @@ class PipelineConfig {
   final int lowSevConfirmNeeded;
   final Map<String, double> minConfByTag;
   final Map<String, double> minConfByLabel;
+  final Map<String, double> minConfByModel;
   final double? repeatVeryNearFeet;
   final double? repeatNearFeet;
 
@@ -215,8 +219,8 @@ class PipelineConfig {
     return debounceFar;
   }
 
-  double minConfFor(String tag, String label) {
-    var m = minConf;
+  double minConfFor(String tag, String label, {String? model}) {
+    var m = (model != null ? minConfByModel[model] : null) ?? minConf;
     final t = minConfByTag[tag];
     if (t != null && t > m) m = t;
     final l = minConfByLabel[label];
@@ -258,6 +262,9 @@ const PipelineConfig kFieldPipelineConfig = PipelineConfig(
   // alarm. Both are single observations: weak evidence, see KNOWN_LIMITS.md.
   minConfByTag: {'stairs_up': 0.55},
   minConfByLabel: {'desk': 0.80},
+  // On-device furniture detector (lib/furniture_detection.dart): 0.30 for its
+  // six furniture classes. Every other source keeps minConf (0.40).
+  minConfByModel: {'device': 0.30},
 );
 
 Proximity proximityFor(double distFeet, bool clipped, PipelineConfig c) {
@@ -413,7 +420,7 @@ class DetectionPipeline {
     final model = det['model'] as String? ?? '-';
 
     final conf = box[4];
-    if (conf < config.minConfFor(tag, label)) return null;
+    if (conf < config.minConfFor(tag, label, model: model)) return null;
 
     final xCenter = (box[0] + box[2]) / 2.0;
     final yMax = box[3];
